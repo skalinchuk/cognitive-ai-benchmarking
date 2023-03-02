@@ -122,7 +122,7 @@ function getArraysDiff(arr1, arr2) {
   });
 }
 
-async function processCompletedGamesCount(sequence, {connection, databaseName, collectionName, iterationName}, resultingSequencesByGamesPlayed) {
+async function processCompletedGamesCount(sequence, {connection, databaseName, collectionName, iterationName}, resultingSequencesByGamesCompleted) {
   const game_ids = sequence.games || [];
   const outputDatabase = connection.db(databaseName.replace('_input', '_output'));
   const outputCollection = outputDatabase.collection(collectionName);
@@ -138,23 +138,23 @@ async function processCompletedGamesCount(sequence, {connection, databaseName, c
       }
       game_sims[results[i]['gameID']].push(results[i]['stimulus_name'])
   }
-  let gamesPlayed = 0;
+  let gamesCompleted = 0;
   for (let i = 0; i < game_ids.length; i++) {
     let sequence_stims = [];
     for (const key of Object.keys(sequence.stims)) {
       sequence_stims.push(sequence.stims[key].stimulus_name);
     }
     if (getArraysDiff(sequence_stims, game_sims[game_ids[i]] || []).length === 0) {
-      gamesPlayed++;
+      gamesCompleted++;
     }
   }
 
-  if (!resultingSequencesByGamesPlayed[gamesPlayed]) {
-    resultingSequencesByGamesPlayed[gamesPlayed] = [];
+  if (!resultingSequencesByGamesCompleted[gamesCompleted]) {
+    resultingSequencesByGamesCompleted[gamesCompleted] = [];
   }
-  resultingSequencesByGamesPlayed[gamesPlayed].push(sequence);
+  resultingSequencesByGamesCompleted[gamesCompleted].push(sequence);
 
-  return resultingSequencesByGamesPlayed;
+  return resultingSequencesByGamesCompleted;
 }
 
 async function findNextSequence(sequencesCollection, {connection, databaseName, collectionName, iterationName}) {
@@ -166,7 +166,7 @@ async function findNextSequence(sequencesCollection, {connection, databaseName, 
     { $sort: { games_count: 1, last_served: 1 } },
   ]).toArray()
 
-  let resultingSequencesByGamesPlayed = [];
+  let resultingSequencesByGamesCompleted = [];
   for (var i = 0; i < results.length; i++) {
     // if the first result has never been served, serve it
     if (results[i]['games_count'] === 0) {
@@ -175,22 +175,67 @@ async function findNextSequence(sequencesCollection, {connection, databaseName, 
     }
 
     const sequences = await sequencesCollection.find({_id: results[i]['id']}).toArray()
-    resultingSequencesByGamesPlayed = await processCompletedGamesCount(
+    resultingSequencesByGamesCompleted = await processCompletedGamesCount(
         sequences[0],
         {connection, databaseName, collectionName, iterationName},
-        resultingSequencesByGamesPlayed,
+        resultingSequencesByGamesCompleted,
     )
   }
-  if (resultingSequencesByGamesPlayed.length > 0) {
+  if (resultingSequencesByGamesCompleted.length > 0) {
     // Let's sort the sequences by the number of games played and then by the last served time,
     // and let's serve the first one (least played and served the longest ago)
-    let resultingSequences = resultingSequencesByGamesPlayed.slice(0,1)[0].sort((a,b) => a.last_served > b.last_served ? 1 : a.last_served < b.last_served ? -1 : 0);
+    let resultingSequences = resultingSequencesByGamesCompleted.slice(0,1)[0].sort((a,b) => a.last_served > b.last_served ? 1 : a.last_served < b.last_served ? -1 : 0);
     return resultingSequences[0];
   } else {
     console.log("Error while getting sequences for iteration ", iterationName, ", details: no sequences found");
     return null;
   }
 }
+
+async function getSequencesStatistics(sequencesCollection, {connection, databaseName, collectionName, iterationName}) {
+
+  const results = await sequencesCollection.aggregate([
+    { $match: { iteration: iterationName } }, // only serve the iteration we want
+    { $addFields: { games_count: {$size: { "$ifNull": [ "$games", [] ] } } } },
+    { "$project": {"id": "$_id", _id: 0, "games_count": 1, "games": 1} },
+    { $sort: { games_count: 1, last_served: 1 } },
+  ]).toArray()
+
+  let gamesPlayed = {};
+  let gamesCompleted = {};
+  let resultingSequencesByGamesCompleted = [];
+  for (var i = 0; i < results.length; i++) {
+    // if the first result has never been served, serve it
+    gamesPlayed[results[i]['games_count']] = gamesPlayed[results[i]['games_count']] ? gamesPlayed[results[i]['games_count']] + 1 : 1;
+
+    const sequences = await sequencesCollection.find({_id: results[i]['id']}).toArray()
+    resultingSequencesByGamesCompleted = await processCompletedGamesCount(
+        sequences[0],
+        {connection, databaseName, collectionName, iterationName},
+        resultingSequencesByGamesCompleted,
+    )
+  }
+  if (resultingSequencesByGamesCompleted.length > 0) {
+    let resultingSequences = [];
+    for (let i in resultingSequencesByGamesCompleted) {
+      gamesCompleted[i] = resultingSequencesByGamesCompleted[i].length;
+      resultingSequences = resultingSequences.concat(
+          resultingSequencesByGamesCompleted[i]
+              .map((sequence) => ({id: sequence._id, last_served: sequence.last_served, games_completed: i}))
+              .sort((a,b) => a.last_served > b.last_served ? 1 : a.last_served < b.last_served ? -1 : 0)
+      );
+    }
+    return {
+      gamesPlayed,
+      gamesCompleted,
+      nextSequences: resultingSequences,
+    }
+  } else {
+    console.log("Error while getting sequences for iteration ", iterationName, ", details: no sequences found");
+    return null;
+  }
+}
+
 
 function serve() {
   mongoConnectWithRetry(2000, (connection) => {
@@ -310,6 +355,36 @@ function serve() {
         response.json(hits > 0);
       }
       checkEach(collectionList, checkCollectionForHits, query, projection, evaluateTally);
+    });
+
+    app.post('/db/getstatistics', async (request, response) => {
+      if (!request.body) {
+        return failure(response, '/db/getstatistics needs post request body');
+      }
+
+      const databaseName = request.body.dbname;
+      const collectionName = request.body.colname;
+      const iterationName = request.body.it_name;
+
+      if (!databaseName) {
+        return failure(response, '/db/getstatistics needs dbname');
+      }
+      if (!collectionName) {
+        return failure(response, '/db/getstatistics needs colname');
+      }
+      if (!iterationName) {
+        return failure(response, '/db/getstatistics needs it_name');
+      }
+
+      const database = connection.db(databaseName);
+      const sequencesCollection = database.collection(collectionName);
+
+      const result = await getSequencesStatistics(
+          sequencesCollection,
+          {connection, databaseName, collectionName, iterationName},
+      );
+
+      response.send({statistics: result});
     });
 
 
