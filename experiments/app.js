@@ -103,6 +103,15 @@ io.on('connection', function (socket) {
     var iter_name = data.iterName;
     writeDataToMongo(data, proj_name, exp_name, iter_name);
   });
+  // on request serve the stimulus data
+  socket.on('getStatistics', function (data) {
+    console.log('getStatistics');
+    var proj_name = data.proj_name;
+    var exp_name = data.exp_name;
+    var iter_name = data.iter_name;
+    getExperimentStats(socket, proj_name, exp_name, iter_name);
+  });
+
 });
 
 FORBIDDEN_FILES = ["auth.json"]
@@ -152,6 +161,25 @@ function initializeWithTrials(socket, proj_name, collection, it_name) {
       socket.emit('stims', packet);
     } else {
       console.log(`error getting stims: ${error} ${body}`);
+    }
+  });
+}
+
+function getExperimentStats(socket, proj_name, collection, it_name) {
+  sendPostRequest('http://localhost:' + store_port + '/db/getstatistics', {
+    json: {
+      dbname: proj_name + '_input',
+      colname: collection,
+      it_name: it_name,
+    }
+  }, (error, res, body) => {
+    if (!error && res.statusCode === 200 && typeof body !== 'undefined') {
+      var packet = {
+        statistics: body.statistics,
+      };
+      socket.emit('statistics', packet);
+    } else {
+      console.log(`error getting statistics: ${error} ${body}`);
     }
   });
 }
