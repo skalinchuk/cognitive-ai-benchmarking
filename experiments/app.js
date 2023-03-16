@@ -12,12 +12,36 @@ var
   sendPostRequest = require('request').post,
   cors = require('cors'),
   portastic = require('portastic');
+  const path = require("path");
+  const ConfigParser = require('configparser');
+  const config = new ConfigParser();
 
 ////////// EXPERIMENT GLOBAL PARAMS //////////
 
 var gameport;
 var store_port;
 var store_process;
+
+const settings_file = '../settings.conf';
+try{
+  config.read(settings_file);
+} catch {
+  console.log("Failed to read config file. Make sure settings.conf exists and that you started app.js with the experiments folder as working directory.")
+}
+
+var CONFIGFILE;
+const DEFAULT_CONFIG_FILENAME = config.get('DEFAULTS', 'CONFIG_FILENAME');
+if ("CAB_CONFIGFILE" in process.env) {
+  CONFIGFILE = process.env["CAB_CONFIGFILE"]
+} else {
+  CONFIGFILE = path.join(process.env['HOME'], DEFAULT_CONFIG_FILENAME);
+}
+
+if (fs.existsSync(CONFIGFILE)) {
+  config.read(CONFIGFILE);
+} else {
+  console.log(`No config exists at path ${CONFIGFILE}, check settings`);
+}
 
 var cur_path = process.cwd();
 // make sure that we're launching store.js from the right path
@@ -146,8 +170,50 @@ function initializeWithTrials(socket, proj_name, collection, it_name) {
       it_name: it_name,
       gameid: gameid
     }
-  }, (error, res, body) => {
+  }, async (error, res, body) => {
     if (!error && res.statusCode === 200 && typeof body !== 'undefined') {
+      let missingAssets = [];
+
+      // check the stim for missing assets
+      for (const type of ['stims', 'familiarization_stims']) {
+        const stims = body[type] || {};
+        for (const stim in stims) {
+          try {
+            for (const key in Object.keys(stim)) {
+              if (key.endsWith('_url')) {
+                 const response = await fetch(stim[key], {
+                   method: 'OPTIONS'
+                 });
+                 if (response.status !== 200) {
+                    missingAssets.push({stim_id: stim._id, key, url: stim[key]});
+                 }
+              }
+            }
+          } catch (e) {
+            missingAssets.push({stim_id: stim._id, type, key, url: stim[key]});
+          }
+        }
+      }
+
+      missingAssets.push({stim_id: 1, key: 2, url: "http://"});
+
+      if (missingAssets.length > 0) {
+        console.log(`missing assets: ${missingAssets}`);
+        sendPostRequest('http://localhost:' + store_port + '/notify', {
+          json: {
+            token: config.get('GENERAL', 'notify_token'),
+            dbname: proj_name + '_input',
+            colname: collection,
+            it_name: it_name,
+            inputid: body['_id'],
+            missingAssets
+          }
+        }, (error, res, body) => {
+          // Retry with another sequence
+          initializeWithTrials(socket, proj_name, collection, it_name);
+        });
+      }
+
       // send trial list (and id) to client
       var packet = {
         gameid: gameid,

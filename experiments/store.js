@@ -7,11 +7,14 @@ const mongodb = require('mongodb');
 const colors = require('colors/safe');
 const ConfigParser = require('configparser');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
+
 const config = new ConfigParser();
 const app = express();
 var path = require('path');
 const ObjectID = mongodb.ObjectID;
 const MongoClient = mongodb.MongoClient;
+
 
 const settings_file = '../settings.conf';
 try{
@@ -387,8 +390,55 @@ function serve() {
       response.send({statistics: result});
     });
 
+  app.post('/notify', (request, response) => {
+    if (!request.body || !request.body.token || request.body.token !== config.get('GENERAL', 'notify_token')) {
+      return failure(response, '/notify needs post request body and a correct token');
+    }
 
-    app.listen(port, () => {
+    const dbname = request.body.dbname;
+    const colname = request.body.colname;
+    const it_name = request.body.it_name;
+    const inputid = request.body.inputid;
+    const missingAssets = request.body.missingAssets;
+    if (!missingAssets || !missingAssets.length) {
+      return failure(response, '/notify needs missingAssets');
+    }
+
+    console.log('got notification request: ' + JSON.stringify(request.body));
+
+    var transporter = nodemailer.createTransport({
+      host: config.get('MAIL', 'host'),
+      port: config.get('MAIL', 'port'),
+      secure: config.get('MAIL', 'port') == 465,  // true for 465, false for other ports
+      auth: {
+        user: config.get('MAIL', 'username'),
+        pass: config.get('MAIL', 'password'),
+      },
+      tls: {
+        ciphers:'SSLv3'
+      }
+    });
+
+    var mailOptions = {
+      from: config.get('MAIL', 'from_email'),
+      to: config.get('GENERAL', 'notify_email'),
+      subject: `Notification of broken sequence in ${dbname} - ${colname} - ${it_name}`,
+      text: missingAssets.reduce(
+          (acc, item) => acc + `Stim in ${item.type} with ID ${item.stim_id}: ${item.key}='${item.url}' is missing \n`,
+          `Sequence ID: ${inputid} \n`
+      ),
+    };
+
+    transporter.sendMail(mailOptions, function(error, info){
+      if (error) {
+        console.log(error);
+      } else {
+        console.log('Email sent: ' + info.response);
+      }
+    });
+  });
+
+  app.listen(port, () => {
       log(`running at http://localhost:${port}`);
     });
 
