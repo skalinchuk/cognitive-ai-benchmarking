@@ -3,3 +3,13 @@ password=password
 username=user
 host=localhost
 port=27017
+[GENERAL]
+notify_token=some_secret_token
+notify_email=admin@admin.com
+[MAIL]
+host=smtp.email.com
+port=587
+username=notify@email.com
+password=super_secret_password
+tls=true
+from_email=notifier@email.com
