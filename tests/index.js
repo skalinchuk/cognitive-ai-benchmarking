@@ -15,7 +15,7 @@ async function delay(ms) {
 
 async function testWithRandomCompletion(failRatio = 0.1) {
     console.log('initializing');
-    const browser = await puppeteer.launch({headless: false});
+    const browser = await puppeteer.launch({executablePath: '/usr/bin/google-chrome', headless: false});
     const page = await browser.newPage();
     page.setDefaultTimeout(30000);
     const timeout = 5000;
@@ -45,31 +45,71 @@ async function testWithRandomCompletion(failRatio = 0.1) {
             await page.waitForFunction(() => document.readyState === "complete");
 
             let l = 0;
-            let interrupt = Math.floor(Math.random() * experimentLength / failRatio);
-            // Click through the experiment
+
+            // Click through the familiarization steps
             while ((await page.$$(`.jspsych-btn`)).length > 0) {
+                console.log(`familiarization step ${++l}`);
+
+                await page.waitForFunction(() => document.readyState === "complete");
+                await delay(100);
+                await page.waitForFunction(() => document.getElementsByClassName('jspsych-btn')[0]?.getAttribute('disabled') === null);
+
+                const buttons = await page.$$(`.jspsych-btn`);
+                if (buttons.length === 1) {
+                    await buttons[0].click();
+                } else {
+                    if (choice === 'random') {
+                        await buttons[Math.floor(Math.random() * buttons.length * 0.99)].click();  // 0.99 to avoid random == 1, which would be above the array length
+                    } else {
+                        await buttons[Math.min(choice, buttons.length - 1)].click();
+                    }
+                }
+                await delay(100);
+                await page.waitForNetworkIdle({waitUntil: 'domcontentloaded'});
+
+                const areWeEndingFamilizrization = await page.$$(`#jspsych-instructions-next`);
+                if (areWeEndingFamilizrization.length === 1) {
+                    areWeEndingFamilizrization[0].click();
+                    break;
+                }
+            }
+
+            delay(10000);  // wait for the first stimulus to load
+
+            l = 0;
+            let interrupt = Math.floor(Math.random() * experimentLength / failRatio);
+
+            // Click through the main steps
+            while (true) {
                 console.log(`main step ${++l}`);
 
                 await page.waitForFunction(() => document.readyState === "complete");
                 await delay(100);
-                await page.waitForFunction(() => document.getElementsByClassName('jspsych-btn')[0].getAttribute('disabled') === null);
+                await page.waitForFunction(() => document.getElementsByClassName('jspsych-btn')[0]?.getAttribute('disabled') === null);
 
                 const buttons = await page.$$(`.jspsych-btn`);
-                if (choice === 'random') {
-                    await buttons[Math.floor(Math.random() * buttons.length)].click();
+                if (buttons.length === 1) {
+                    await buttons[0].click();
                 } else {
-                    await buttons[Math.min(choice, buttons.length - 1)].click();
+                    if (choice === 'random') {
+                        await buttons[Math.floor(Math.random() * buttons.length * 0.99)].click();  // 0.99 to avoid random == 1, which would be above the array length
+                    } else {
+                        await buttons[Math.min(choice, buttons.length - 1)].click();
+                    }
                 }
+                await delay(100);
                 await page.waitForNetworkIdle({waitUntil: 'domcontentloaded'});
+
+                const areWeEndingTrial = await page.$$(`#jspsych-instructions-next`);
+                if (areWeEndingTrial.length === 1) {
+                    areWeEndingTrial[0].click();
+                    break;
+                }
 
                 if (interrupt && interrupt <= l) {
                     console.log('interrupting');
                     break;
                 }
-            }
-
-            if (experimentLength === 0) {
-                experimentLength = l;
             }
         }
     } catch (err) {
